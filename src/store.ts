@@ -3,10 +3,11 @@
 // progress and all the mutating actions, persisting to localStorage / IndexedDB.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AnnotationSegment, Project } from './types';
+import type { AnnotationSegment, Project, TrackId } from './types';
 import * as storage from './services/storage';
 import * as videoStore from './services/videoStore';
 import * as gemini from './services/gemini';
+import { getTracks, TRACK_IDS } from './services/spec';
 import { cleanJsonString, safeParseObject } from './utils';
 import type { TimeFormat } from './utils';
 
@@ -46,7 +47,7 @@ export interface Store {
   splitSegment: (segmentId: string, splitMs: number) => void;
   mergeSegmentWithNext: (segmentId: string) => void;
   deleteSegment: (segmentId: string) => void;
-  addSegment: () => void;
+  addSegment: (track: TrackId) => void;
   lintAllSegments: () => Promise<void>;
   clearLintWarnings: () => void;
   regenerateCell: (
@@ -254,25 +255,39 @@ export function useStore(): Store {
       );
 
       const cleaned = cleanJsonString(resultText);
-      const arr = JSON.parse(cleaned);
-      if (!Array.isArray(arr)) throw new Error('Model did not return a segment array.');
+      const parsed = JSON.parse(cleaned);
+      const tracks = getTracks(proj.confirmedSpecJson);
+      const newSegments: AnnotationSegment[] = [];
 
-      const newSegments: AnnotationSegment[] = arr.map((obj: any) => {
-        const startSec = Number(obj.startTime ?? 0);
-        const endSec = Number(obj.endTime ?? 0);
-        const captions: Record<string, any> = {};
-        for (const key of Object.keys(obj)) {
-          if (key !== 'startTime' && key !== 'endTime') captions[key] = obj[key];
+      for (const trackId of TRACK_IDS) {
+        // Prefer the object shape { speech: [...], av: [...] }; tolerate a bare
+        // array by assigning it to the speech track.
+        const arr: any[] = Array.isArray(parsed?.[trackId])
+          ? parsed[trackId]
+          : Array.isArray(parsed) && trackId === 'speech'
+            ? parsed
+            : [];
+        const [c1, c2] = tracks[trackId].captions;
+        for (const obj of arr) {
+          const startSec = Number(obj.startTime ?? 0);
+          const endSec = Number(obj.endTime ?? 0);
+          const captions: Record<string, string> = {
+            [c1.id]: String(obj[c1.id] ?? ''),
+            [c2.id]: String(obj[c2.id] ?? ''),
+          };
+          newSegments.push({
+            id: storage.newId('seg'),
+            projectId: proj.id,
+            track: trackId,
+            startTimeMs: Math.round(startSec * 1000),
+            endTimeMs: Math.round(endSec * 1000),
+            captionsJson: JSON.stringify(captions),
+            violationsJson: null,
+          });
         }
-        return {
-          id: storage.newId('seg'),
-          projectId: proj.id,
-          startTimeMs: Math.round(startSec * 1000),
-          endTimeMs: Math.round(endSec * 1000),
-          captionsJson: JSON.stringify(captions),
-          violationsJson: null,
-        };
-      });
+      }
+
+      if (newSegments.length === 0) throw new Error('Model returned no annotations.');
 
       persistSegments(proj.id, newSegments);
       setCurrentStep(3);
@@ -345,10 +360,16 @@ export function useStore(): Store {
   const mergeSegmentWithNext = useCallback(
     (segmentId: string) => {
       commitSegments((segs) => {
-        const idx = segs.findIndex((s) => s.id === segmentId);
-        if (idx === -1 || idx >= segs.length - 1) return segs;
-        const target = segs[idx];
-        const next = segs[idx + 1];
+        const target = segs.find((s) => s.id === segmentId);
+        if (!target) return segs;
+        // Find the next annotation on the SAME track, by start time.
+        const sameTrack = segs
+          .filter((s) => s.track === target.track)
+          .sort((a, b) => a.startTimeMs - b.startTimeMs);
+        const pos = sameTrack.findIndex((s) => s.id === segmentId);
+        if (pos === -1 || pos >= sameTrack.length - 1) return segs;
+        const next = sameTrack[pos + 1];
+
         const targetCaps = safeParseObject(target.captionsJson);
         const nextCaps = safeParseObject(next.captionsJson);
         const merged: Record<string, string> = {};
@@ -360,9 +381,9 @@ export function useStore(): Store {
           endTimeMs: next.endTimeMs,
           captionsJson: JSON.stringify(merged),
         };
-        const out = [...segs];
-        out.splice(idx, 2, mergedSeg);
-        return out;
+        return segs
+          .filter((s) => s.id !== next.id)
+          .map((s) => (s.id === target.id ? mergedSeg : s));
       });
     },
     [commitSegments]
@@ -375,28 +396,34 @@ export function useStore(): Store {
     [commitSegments]
   );
 
-  const addSegment = useCallback(() => {
-    const proj = currentProjectRef.current;
-    if (!proj) return;
-    commitSegments((segs) => {
-      const startMs = segs.length > 0 ? segs[segs.length - 1].endTimeMs : 0;
-      const endMs = startMs + 5000;
-      const blankCaps: Record<string, string> = {};
-      const spec = safeParseObject(proj.confirmedSpecJson);
-      const columns: any[] = Array.isArray(spec.columns) ? spec.columns : [];
-      if (columns.length > 0) for (const c of columns) blankCaps[c.id] = '';
-      else blankCaps.transcription = '';
-      const newSeg: AnnotationSegment = {
-        id: storage.newId('seg'),
-        projectId: proj.id,
-        startTimeMs: startMs,
-        endTimeMs: endMs,
-        captionsJson: JSON.stringify(blankCaps),
-        violationsJson: null,
-      };
-      return [...segs, newSeg];
-    });
-  }, [commitSegments]);
+  const addSegment = useCallback(
+    (track: TrackId) => {
+      const proj = currentProjectRef.current;
+      if (!proj) return;
+      commitSegments((segs) => {
+        // Append after the last annotation on this track.
+        const trackSegs = segs.filter((s) => s.track === track);
+        const startMs = trackSegs.length
+          ? Math.max(...trackSegs.map((s) => s.endTimeMs))
+          : 0;
+        const endMs = startMs + 5000;
+        const tracks = getTracks(proj.confirmedSpecJson);
+        const [c1, c2] = tracks[track].captions;
+        const blankCaps: Record<string, string> = { [c1.id]: '', [c2.id]: '' };
+        const newSeg: AnnotationSegment = {
+          id: storage.newId('seg'),
+          projectId: proj.id,
+          track,
+          startTimeMs: startMs,
+          endTimeMs: endMs,
+          captionsJson: JSON.stringify(blankCaps),
+          violationsJson: null,
+        };
+        return [...segs, newSeg];
+      });
+    },
+    [commitSegments]
+  );
 
   const lintAllSegments = useCallback(async () => {
     const proj = currentProjectRef.current;

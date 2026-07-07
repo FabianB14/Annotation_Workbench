@@ -1,16 +1,29 @@
 // Core data models for the Annotation Workbench web app.
-// Ported from the original Android/Room entities.
 
-export interface SpecColumn {
+/** The two independently-segmented annotation tracks. */
+export type TrackId = 'speech' | 'av';
+
+/** A single editable caption field (one of the two on a track). */
+export interface CaptionDef {
   id: string;
   name: string;
   description: string;
-  required: boolean;
+}
+
+/** A track = a named pair of captions (e.g. Speech Transcription + Characteristics). */
+export interface TrackDef {
+  id: TrackId;
+  name: string;
+  /** Exactly two captions: [caption 1, caption 2]. */
+  captions: [CaptionDef, CaptionDef];
 }
 
 export interface RulesSpec {
   segmentationRules: string;
-  columns: SpecColumn[];
+  tracks: {
+    speech: TrackDef;
+    av: TrackDef;
+  };
   requiredVocabulary: string[];
   hardConstraints: string[];
   commonMistakes: string[];
@@ -22,23 +35,25 @@ export interface Project {
   rulesRawText: string;
   confirmedSpecJson: string; // stringified RulesSpec (may be empty until confirmed)
   videoName: string;
-  /**
-   * Video is persisted as a Blob in IndexedDB, keyed by the project id.
-   * We only keep the file name in the project record.
-   */
+  /** Video is persisted as a Blob in IndexedDB, keyed by the project id. */
   hasVideo: boolean;
   videoDurationMs: number;
   createdAt: number;
   updatedAt: number;
 }
 
+/**
+ * An annotation: a time-coded entry on one track with exactly two captions.
+ * (What the UI calls an "annotation"; each track has its own independent set.)
+ */
 export interface AnnotationSegment {
   id: string;
   projectId: string;
+  track: TrackId;
   startTimeMs: number;
   endTimeMs: number;
-  /** map of columnId -> caption string, stringified as JSON */
+  /** map of the track's two captionIds -> caption string, stringified as JSON */
   captionsJson: string;
-  /** JSON object map of columnId -> violation reason, or null */
+  /** JSON object map of captionId -> violation reason, or null */
   violationsJson: string | null;
 }

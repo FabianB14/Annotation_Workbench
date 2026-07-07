@@ -524,6 +524,45 @@ input[type='range'].timeline {
   gap: 8px;
 }
 
+.tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 8px 8px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-bottom: 2px solid transparent;
+}
+.tab:hover {
+  color: var(--text-main);
+}
+.tab.active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+  background: #141218;
+}
+.tab-count {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  background: var(--surface-variant);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+.tab.active .tab-count {
+  color: var(--on-primary);
+  background: var(--primary);
+}
+
 .annotation-list {
   flex: 1;
   overflow-y: auto;
