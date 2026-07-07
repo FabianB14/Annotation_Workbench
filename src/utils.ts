@@ -26,6 +26,22 @@ export function cleanJsonString(raw: string): string {
   return str.trim();
 }
 
+/**
+ * Parse a duration entered as "MM:SS.S" (or "H:MM:SS.S") or plain seconds
+ * ("307.75") into seconds. Returns null if unparseable/empty.
+ */
+export function parseTimeInput(input: string): number | null {
+  const t = input.trim();
+  if (!t) return null;
+  if (t.includes(':')) {
+    const parts = t.split(':').map((p) => Number(p));
+    if (parts.some((n) => isNaN(n) || n < 0)) return null;
+    return parts.reduce((acc, n) => acc * 60 + n, 0);
+  }
+  const n = Number(t);
+  return isNaN(n) || n < 0 ? null : n;
+}
+
 export function safeParseObject(json: string): Record<string, any> {
   try {
     const v = JSON.parse(json);

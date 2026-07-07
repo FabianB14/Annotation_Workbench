@@ -8,8 +8,17 @@ import * as storage from './services/storage';
 import * as videoStore from './services/videoStore';
 import * as gemini from './services/gemini';
 import { getTracks, TRACK_IDS } from './services/spec';
+import { correctMs, validateCorrection, qaLine } from './services/normalization';
 import { cleanJsonString, safeParseObject } from './utils';
 import type { TimeFormat } from './utils';
+
+/** Normalization inputs captured on the upload screen. */
+export interface NormalizationSettings {
+  captureSpeed: number;
+  sourceDurationSec: number | null;
+  recordingDurationSec: number | null;
+  appliedSpeed: number;
+}
 
 export interface Store {
   projects: Project[];
@@ -36,7 +45,8 @@ export interface Store {
   ingestRules: (
     projectName: string,
     rulesText: string,
-    videoFile: File | null
+    videoFile: File | null,
+    normalization: NormalizationSettings
   ) => Promise<void>;
   saveConfirmedSpec: (editedSpecJson: string) => void;
   resetProjectSegments: () => void;
@@ -167,7 +177,12 @@ export function useStore(): Store {
   // --- Step 1: ingest rules ---
 
   const ingestRules = useCallback(
-    async (projectName: string, rulesText: string, videoFile: File | null) => {
+    async (
+      projectName: string,
+      rulesText: string,
+      videoFile: File | null,
+      normalization: NormalizationSettings
+    ) => {
       setIsGenerating(true);
       setGenerationProgress('Analyzing annotation rules document...');
       setErrorMessage(null);
@@ -186,6 +201,15 @@ export function useStore(): Store {
           videoName,
           hasVideo: !!videoFile,
           videoDurationMs: 0,
+          captureSpeed: normalization.captureSpeed,
+          sourceDurationSec: normalization.sourceDurationSec,
+          recordingDurationSec: normalization.recordingDurationSec,
+          appliedSpeed: normalization.appliedSpeed,
+          normalizationQa: qaLine(
+            normalization.appliedSpeed,
+            normalization.sourceDurationSec,
+            normalization.recordingDurationSec
+          ),
           createdAt: now,
           updatedAt: now,
         };
@@ -254,6 +278,20 @@ export function useStore(): Store {
         (msg) => setGenerationProgress(msg)
       );
 
+      // Normalization: map recording-timeline times onto the source timeline.
+      const S = proj.appliedSpeed && proj.appliedSpeed > 0 ? proj.appliedSpeed : 1;
+      const validation = validateCorrection(
+        proj.recordingDurationSec,
+        proj.sourceDurationSec,
+        S
+      );
+      if (!validation.ok) {
+        // HARD STOP — do not annotate against a broken timeline.
+        setErrorMessage(`Speed normalization failed. ${validation.message}`);
+        setIsGenerating(false);
+        return;
+      }
+
       const cleaned = cleanJsonString(resultText);
       const parsed = JSON.parse(cleaned);
       const tracks = getTracks(proj.confirmedSpecJson);
@@ -279,8 +317,9 @@ export function useStore(): Store {
             id: storage.newId('seg'),
             projectId: proj.id,
             track: trackId,
-            startTimeMs: Math.round(startSec * 1000),
-            endTimeMs: Math.round(endSec * 1000),
+            // Gemini analyzed the recording timeline; correct to source timeline.
+            startTimeMs: correctMs(Math.round(startSec * 1000), S),
+            endTimeMs: correctMs(Math.round(endSec * 1000), S),
             captionsJson: JSON.stringify(captions),
             violationsJson: null,
           });

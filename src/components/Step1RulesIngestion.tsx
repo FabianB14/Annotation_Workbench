@@ -3,7 +3,15 @@ import type { Store } from '../store';
 import { MODEL_LABELS } from '../services/gemini';
 import { extractTextFromFile } from '../services/documentExtractor';
 import { getTrackList, BASELINE_HARD_RULES } from '../services/spec';
-import { safeParseObject } from '../utils';
+import {
+  SPEED_PRESETS,
+  MIN_SPEED,
+  MAX_SPEED,
+  detectedSpeed,
+  isMismatch,
+  resolveSpeed,
+} from '../services/normalization';
+import { safeParseObject, parseTimeInput } from '../utils';
 import { Switch, Spinner } from './Shared';
 import {
   DocumentIcon,
@@ -12,6 +20,7 @@ import {
   BrainIcon,
   ArrowForwardIcon,
   EditIcon,
+  ClockIcon,
 } from './Icons';
 
 const SAMPLE_RULES = `# Annotation Guidelines for Scenic Video Projects
@@ -38,6 +47,24 @@ export default function Step1RulesIngestion({ store }: { store: Store }) {
   const [videoName, setVideoName] = useState('');
   const [parsedSpecJson, setParsedSpecJson] = useState('');
 
+  // Playback-speed normalization inputs
+  const [captureSpeedSel, setCaptureSpeedSel] = useState('1');
+  const [customSpeed, setCustomSpeed] = useState('2');
+  const [sourceDurationStr, setSourceDurationStr] = useState('');
+  const [recordingDurationSec, setRecordingDurationSec] = useState<number | null>(null);
+  const [mismatch, setMismatch] = useState<{ detected: number; selected: number } | null>(null);
+
+  const captureSpeed = (() => {
+    if (captureSpeedSel === 'custom') {
+      const n = parseFloat(customSpeed);
+      if (isNaN(n)) return 1;
+      return Math.min(MAX_SPEED, Math.max(MIN_SPEED, n));
+    }
+    return parseFloat(captureSpeedSel);
+  })();
+  const sourceSec = parseTimeInput(sourceDurationStr);
+  const detected = detectedSpeed(sourceSec, recordingDurationSec);
+
   const rulesInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
 
@@ -48,6 +75,18 @@ export default function Step1RulesIngestion({ store }: { store: Store }) {
       setRulesText(currentProject.rulesRawText);
       setVideoName(currentProject.videoName);
       setParsedSpecJson(currentProject.confirmedSpecJson);
+      // Restore the last-used speed settings (always shown, never silent).
+      const cs = currentProject.captureSpeed ?? 1;
+      if (SPEED_PRESETS.includes(cs)) {
+        setCaptureSpeedSel(String(cs));
+      } else {
+        setCaptureSpeedSel('custom');
+        setCustomSpeed(String(cs));
+      }
+      setSourceDurationStr(
+        currentProject.sourceDurationSec != null ? String(currentProject.sourceDurationSec) : ''
+      );
+      setRecordingDurationSec(currentProject.recordingDurationSec ?? null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentProject?.id]);
@@ -62,6 +101,42 @@ export default function Step1RulesIngestion({ store }: { store: Store }) {
     setVideoFile(file);
     setVideoName(file.name);
     if (!projectName.trim()) setProjectName(`Project - ${stripExt(file.name)}`);
+    // Measure the recording duration for speed detection.
+    setRecordingDurationSec(null);
+    const url = URL.createObjectURL(file);
+    const v = document.createElement('video');
+    v.preload = 'metadata';
+    v.onloadedmetadata = () => {
+      URL.revokeObjectURL(url);
+      setRecordingDurationSec(isFinite(v.duration) && v.duration > 0 ? v.duration : null);
+    };
+    v.onerror = () => {
+      URL.revokeObjectURL(url);
+      setRecordingDurationSec(null);
+    };
+    v.src = url;
+  };
+
+  const doIngest = (useDetected: boolean) => {
+    const appliedSpeed = resolveSpeed(
+      { captureSpeed, sourceDurationSec: sourceSec, recordingDurationSec },
+      useDetected
+    );
+    store.ingestRules(projectName, rulesText, videoFile, {
+      captureSpeed,
+      sourceDurationSec: sourceSec,
+      recordingDurationSec,
+      appliedSpeed,
+    });
+  };
+
+  const onIngestClick = () => {
+    // Blocking mismatch check: dropdown set AND detected differs by > 5%.
+    if (detected != null && isMismatch(detected, captureSpeed)) {
+      setMismatch({ detected, selected: captureSpeed });
+      return;
+    }
+    doIngest(detected != null); // prefer detected when we have it
   };
 
   // ---- render: generating ----
@@ -277,6 +352,91 @@ export default function Step1RulesIngestion({ store }: { store: Store }) {
           </div>
         </div>
 
+        {/* Capture speed & timeline normalization */}
+        <div className="card" style={{ padding: 16 }}>
+          <div className="upload-head" style={{ marginBottom: 10 }}>
+            <div className="left">
+              <ClockIcon size={18} className="primary-text" /> Capture Speed &amp; Timeline
+            </div>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div>
+              <label className="field-label">Speed the video was recorded/played at</label>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <select
+                  className="text-input"
+                  style={{ maxWidth: 170 }}
+                  value={captureSpeedSel}
+                  onChange={(e) => setCaptureSpeedSel(e.target.value)}
+                >
+                  <option value="1">1x (normal)</option>
+                  <option value="1.25">1.25x</option>
+                  <option value="1.5">1.5x</option>
+                  <option value="1.75">1.75x</option>
+                  <option value="2">2x</option>
+                  <option value="custom">Custom…</option>
+                </select>
+                {captureSpeedSel === 'custom' && (
+                  <input
+                    className="text-input mono"
+                    style={{ maxWidth: 130 }}
+                    type="number"
+                    min={MIN_SPEED}
+                    max={MAX_SPEED}
+                    step={0.05}
+                    placeholder="0.25–4.0"
+                    value={customSpeed}
+                    onChange={(e) => setCustomSpeed(e.target.value)}
+                  />
+                )}
+              </div>
+              <div className="muted" style={{ marginTop: 6 }}>
+                If you screen-recorded a video playing at 2x, select 2x. The app restores normal speed
+                before processing, so exported timestamps land on the real timeline.
+              </div>
+            </div>
+
+            <div>
+              <label className="field-label">Source duration (optional, strongly encouraged)</label>
+              <input
+                className="text-input mono"
+                placeholder="e.g. 5:07.75 or 307.75"
+                value={sourceDurationStr}
+                onChange={(e) => setSourceDurationStr(e.target.value)}
+              />
+              <div className="muted" style={{ marginTop: 6 }}>
+                The true length of the original video. Enables automatic speed detection and duration
+                validation.
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <div className="chip">
+                Recording:&nbsp;
+                <span className="mono">
+                  {recordingDurationSec != null ? `${recordingDurationSec.toFixed(2)}s` : '—'}
+                </span>
+              </div>
+              {detected != null && (
+                <div className="chip">
+                  Detected:&nbsp;
+                  <span className="mono primary-text">{detected.toFixed(2)}x</span>
+                </div>
+              )}
+              <div className="chip">
+                Active:&nbsp;<span className="mono primary-text">{captureSpeed.toFixed(2)}x</span>
+              </div>
+            </div>
+
+            {detected != null && isMismatch(detected, captureSpeed) && (
+              <div className="badge-amber">
+                Heads up: detected {detected.toFixed(2)}x differs from your selected{' '}
+                {captureSpeed.toFixed(2)}x — you'll be asked to confirm on ingest.
+              </div>
+            )}
+          </div>
+        </div>
+
         {/* Model toggle */}
         <div className="card" style={{ padding: 16 }}>
           <div className="upload-head">
@@ -295,7 +455,7 @@ export default function Step1RulesIngestion({ store }: { store: Store }) {
         <button
           className="btn btn-primary btn-lg"
           disabled={!canIngest}
-          onClick={() => store.ingestRules(projectName, rulesText, videoFile)}
+          onClick={onIngestClick}
         >
           <BrainIcon size={18} /> Ingest &amp; Process Annotation Spec
         </button>
@@ -314,6 +474,46 @@ export default function Step1RulesIngestion({ store }: { store: Store }) {
           </p>
         )}
       </div>
+
+      {/* Blocking speed-mismatch confirmation */}
+      {mismatch && (
+        <div className="modal-backdrop" onClick={() => setMismatch(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h2 className="h1" style={{ fontSize: 16, color: 'var(--amber)' }}>
+              Capture speed mismatch
+            </h2>
+            <p className="muted">
+              You selected <strong>{mismatch.selected.toFixed(2)}x</strong>, but the recording appears
+              to be <strong>{mismatch.detected.toFixed(2)}x</strong> of the source (
+              {sourceSec?.toFixed(2)}s source ÷ {recordingDurationSec?.toFixed(2)}s recording). Using
+              the wrong value will shift every exported timestamp.
+            </p>
+            <div className="row" style={{ flexWrap: 'wrap' }}>
+              <button
+                className="btn btn-outline"
+                onClick={() => {
+                  setMismatch(null);
+                  doIngest(false);
+                }}
+              >
+                Use my selection ({mismatch.selected.toFixed(2)}x)
+              </button>
+              <button className="btn btn-outline" onClick={() => setMismatch(null)}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={() => {
+                  setMismatch(null);
+                  doIngest(true);
+                }}
+              >
+                Use detected ({mismatch.detected.toFixed(2)}x)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
