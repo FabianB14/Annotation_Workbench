@@ -1,6 +1,6 @@
 {
   "name": "Annotation Workbench",
-  "description": "Professional video annotation and structured captioning workbench powered by Gemini's multimodal video understanding and dynamic rules-based linting.",
+  "description": "Professional video annotation and structured captioning web app powered by Gemini's multimodal video understanding and dynamic rules-based linting.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
