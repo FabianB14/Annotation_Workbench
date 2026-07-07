@@ -14,6 +14,7 @@ import {
   ChevronRightIcon,
   CloseIcon,
   BrainIcon,
+  HomeIcon,
 } from './components/Icons';
 
 const STEP_LABELS = ['Rules Spec', 'Ingest Video', 'Review Studio'];
@@ -29,21 +30,28 @@ export default function App() {
     <div className="app">
       {/* Top bar */}
       <header className="topbar">
-        <div className="brand">
+        <button
+          className="brand"
+          title="Home"
+          onClick={() => store.setStep(1)}
+        >
           <div className="logo">
             <BrainIcon size={18} />
           </div>
-          <div>
+          <div style={{ textAlign: 'left' }}>
             <div className="title">Workbench</div>
             <div className="subtitle mono">PROJ_DELTA_V04</div>
           </div>
-        </div>
+        </button>
         <div className="actions">
           {store.simulationMode && (
             <span className="badge-amber" title="No API key set — running in demo simulation mode">
               Demo Mode
             </span>
           )}
+          <button className="btn btn-outline" title="Back to main page" onClick={() => store.setStep(1)}>
+            <HomeIcon size={16} /> Home
+          </button>
           <button
             className="icon-btn"
             title="Gemini API Key"

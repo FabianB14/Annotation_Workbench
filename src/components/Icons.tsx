@@ -301,6 +301,17 @@ export const SubtitlesOffIcon = ({ size, className }: IconProps) =>
     className
   );
 
+export const HomeIcon = ({ size, className }: IconProps) =>
+  svg(
+    <>
+      <path d="M3 9.5L12 3l9 6.5" />
+      <path d="M5 10v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V10" />
+      <path d="M9 21v-6h6v6" />
+    </>,
+    size,
+    className
+  );
+
 export const KeyIcon = ({ size, className }: IconProps) =>
   svg(
     <>
