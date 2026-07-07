@@ -3,7 +3,7 @@ import type { Store } from '../store';
 import VideoPlayer from './VideoPlayer';
 import SegmentRow from './SegmentRow';
 import { Spinner } from './Shared';
-import { formatTimeMs, safeParseObject, copyToClipboard, downloadText } from '../utils';
+import { formatTime, formatTimeMs, safeParseObject, copyToClipboard, downloadText } from '../utils';
 import {
   PlayCircleIcon,
   PauseCircleIcon,
@@ -17,12 +17,13 @@ import {
   CodeIcon,
   GridIcon,
   SubtitlesOffIcon,
+  ClockIcon,
 } from './Icons';
 
 const SPEEDS = [0.25, 0.5, 0.75, 1.0];
 
 export default function Step3ReviewWorkspace({ store }: { store: Store }) {
-  const { currentProject, segments, isLinting } = store;
+  const { currentProject, segments, isLinting, timeFormat } = store;
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
@@ -140,7 +141,7 @@ export default function Step3ReviewWorkspace({ store }: { store: Store }) {
 
       <div className="video-hud">
         <span className="time mono">
-          {formatTimeMs(currentTimeMs)} / {formatTimeMs(durationMs)}
+          {formatTime(currentTimeMs, timeFormat)} / {formatTime(durationMs, timeFormat)}
         </span>
         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
           <button className="icon-btn" title="Back 0.5s" onClick={() => seek(currentTimeMs - 500)}>
@@ -207,6 +208,13 @@ export default function Step3ReviewWorkspace({ store }: { store: Store }) {
           </button>
         </div>
         <div className="group">
+          <button
+            className="btn btn-outline"
+            title="Toggle timestamp format (MM:SS.S / seconds)"
+            onClick={() => store.setTimeFormat(timeFormat === 'mmss' ? 'seconds' : 'mmss')}
+          >
+            <ClockIcon size={16} /> {timeFormat === 'mmss' ? 'MM:SS.S' : 'Seconds'}
+          </button>
           <button className="icon-btn" title="Add row" onClick={() => store.addSegment()}>
             <PlusIcon size={20} className="primary-text" />
           </button>
@@ -251,6 +259,7 @@ export default function Step3ReviewWorkspace({ store }: { store: Store }) {
                 columns={columns}
                 isActive={i === activeIndex}
                 currentPlaybackTimeMs={currentTimeMs}
+                timeFormat={timeFormat}
                 onSeek={seek}
                 onUpdateText={store.updateCellText}
                 onUpdateTimes={store.updateSegmentTimes}

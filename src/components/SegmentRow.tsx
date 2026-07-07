@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { AnnotationSegment } from '../types';
-import { formatTimeMs, safeParseObject } from '../utils';
+import type { TimeFormat } from '../utils';
+import { formatTime, safeParseObject } from '../utils';
 import {
   PlayIcon,
   ClockIcon,
@@ -16,6 +17,7 @@ interface Props {
   columns: Array<{ id: string; name: string }>;
   isActive: boolean;
   currentPlaybackTimeMs: number;
+  timeFormat: TimeFormat;
   onSeek: (ms: number) => void;
   onUpdateText: (segId: string, colId: string, text: string) => void;
   onUpdateTimes: (segId: string, startMs: number, endMs: number) => void;
@@ -31,6 +33,7 @@ export default function SegmentRow({
   columns,
   isActive,
   currentPlaybackTimeMs,
+  timeFormat,
   onSeek,
   onUpdateText,
   onUpdateTimes,
@@ -57,7 +60,8 @@ export default function SegmentRow({
         >
           <PlayIcon size={13} />
           <span className="mono">
-            {formatTimeMs(segment.startTimeMs)} - {formatTimeMs(segment.endTimeMs)}
+            {formatTime(segment.startTimeMs, timeFormat)} -{' '}
+            {formatTime(segment.endTimeMs, timeFormat)}
           </span>
         </div>
 
