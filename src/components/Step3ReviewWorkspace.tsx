@@ -20,12 +20,14 @@ import {
   GridIcon,
   SubtitlesOffIcon,
   ClockIcon,
+  RegenIcon,
 } from './Icons';
 
 const SPEEDS = [0.25, 0.5, 0.75, 1.0];
 
 export default function Step3ReviewWorkspace({ store }: { store: Store }) {
-  const { currentProject, segments, isLinting, timeFormat } = store;
+  const { currentProject, segments, isLinting, timeFormat, isGenerating, generationProgress } = store;
+  const [showRegenConfirm, setShowRegenConfirm] = useState(false);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
@@ -238,6 +240,13 @@ export default function Step3ReviewWorkspace({ store }: { store: Store }) {
           <button className="btn btn-outline" onClick={() => store.clearLintWarnings()}>
             <ClearIcon size={16} /> Clear Warnings
           </button>
+          <button
+            className="btn btn-outline"
+            title="Re-run the AI draft for the whole video (both tracks)"
+            onClick={() => setShowRegenConfirm(true)}
+          >
+            <RegenIcon size={16} /> Regenerate All
+          </button>
         </div>
         <div className="group">
           <button
@@ -332,6 +341,47 @@ export default function Step3ReviewWorkspace({ store }: { store: Store }) {
     <div className={`workspace ${isWide ? 'split' : 'stacked'}`}>
       {videoPanel}
       {editor}
+
+      {/* Confirm full regeneration (destructive) */}
+      {showRegenConfirm && (
+        <div className="modal-backdrop" onClick={() => setShowRegenConfirm(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h2 className="h1 primary-text" style={{ fontSize: 16 }}>
+              Regenerate all annotations?
+            </h2>
+            <p className="muted">
+              This re-runs the AI draft for the whole video and <strong>replaces</strong> the current
+              Speech and Audio/Visual annotations for “{currentProject.name}”. Any manual edits will be
+              lost.
+            </p>
+            <div className="row">
+              <button className="btn btn-outline" onClick={() => setShowRegenConfirm(false)}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={() => {
+                  setShowRegenConfirm(false);
+                  void store.generateAnnotations();
+                }}
+              >
+                <RegenIcon size={16} /> Regenerate
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Progress overlay while (re)generating */}
+      {isGenerating && (
+        <div className="modal-backdrop">
+          <div className="modal" style={{ alignItems: 'center', textAlign: 'center' }}>
+            <Spinner className="lg" />
+            <div style={{ fontWeight: 600 }}>{generationProgress || 'Regenerating…'}</div>
+            <div className="muted">Regenerating annotations with Gemini across both tracks…</div>
+          </div>
+        </div>
+      )}
 
       {regenCell && (
         <div className="modal-backdrop" onClick={() => setRegenCell(null)}>
