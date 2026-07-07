@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Store } from '../store';
 import { MODEL_LABELS } from '../services/gemini';
 import { extractTextFromFile } from '../services/documentExtractor';
-import { getTrackList } from '../services/spec';
+import { getTrackList, BASELINE_HARD_RULES } from '../services/spec';
 import { safeParseObject } from '../utils';
 import { Switch, Spinner } from './Shared';
 import {
@@ -135,6 +135,16 @@ export default function Step1RulesIngestion({ store }: { store: Store }) {
                 Quality Constraints
               </div>
               {constraints.map((c, i) => (
+                <div key={i} className="muted" style={{ paddingLeft: 8 }}>
+                  - {c}
+                </div>
+              ))}
+
+              <hr className="divider" />
+              <div className="spec-row" style={{ color: 'var(--amber)' }}>
+                Always-on Hard Rules
+              </div>
+              {BASELINE_HARD_RULES.map((c, i) => (
                 <div key={i} className="muted" style={{ paddingLeft: 8 }}>
                   - {c}
                 </div>

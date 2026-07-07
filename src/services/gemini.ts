@@ -7,7 +7,9 @@
 
 import { GoogleGenAI } from '@google/genai';
 import type { RulesSpec, TrackDef } from '../types';
-import { getTracks, DEFAULT_TRACKS } from './spec';
+import { getTracks, DEFAULT_TRACKS, BASELINE_HARD_RULES } from './spec';
+
+const baselineRulesBlock = BASELINE_HARD_RULES.map((r, i) => `  ${i + 1}. ${r}`).join('\n');
 
 const FLASH_MODEL = 'gemini-2.5-flash';
 const PRO_MODEL = 'gemini-2.5-pro';
@@ -218,6 +220,9 @@ ${describe(tracks.av)}
 Rules specification:
 ${rulesSpecJson}
 
+Baseline hard rules (ALWAYS apply, in addition to the rules spec above):
+${baselineRulesBlock}
+
 Precision instructions:
 - Cover the whole video timeline continuously within each track, independently.
 - Only describe what is directly evidenced in the video. If speech is unclear, use the rules'
@@ -297,13 +302,18 @@ against the rules specification.
 Rules Specification:
 ${rulesSpecJson}
 
+Baseline hard rules (ALWAYS enforce, in addition to the rules spec):
+${baselineRulesBlock}
+
 Segment Captions:
 ${captionsJson}
 
 Identify any rule violations per caption (missing required keywords/markers, exceeding
 character/word limits, vague phrasing, content leaked into the wrong caption, bad timestamp
-format). Return ONLY a valid JSON object mapping caption ids to a concise warning string. If a
-caption has no violation, omit its key or set it to "". No markdown, no extra text.`.trim();
+format, or any breach of the baseline hard rules — e.g. song lyrics placed in Speech when no
+one on screen is singing them). Return ONLY a valid JSON object mapping caption ids to a concise
+warning string. If a caption has no violation, omit its key or set it to "". No markdown, no
+extra text.`.trim();
 
   try {
     return await callGemini(modelFor(usePro), prompt, 0.1, true);
