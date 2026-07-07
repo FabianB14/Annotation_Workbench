@@ -1,13 +1,14 @@
 // Gemini service for the Annotation Workbench web app.
-// Ported from the Android GeminiClient. Uses the official @google/genai SDK and
-// runs entirely in the browser with a user-supplied API key. When no key is
-// present it falls back to high-fidelity simulation so the app is fully usable
-// offline / for demos.
+// Uses the official @google/genai SDK, runs in the browser with a user-supplied
+// API key, and falls back to high-fidelity simulation when no key is present.
+//
+// The app has two independently-segmented tracks (speech, av), each with two
+// captions. Generation returns { speech: [...], av: [...] }.
 
 import { GoogleGenAI } from '@google/genai';
-import type { RulesSpec } from '../types';
+import type { RulesSpec, TrackDef } from '../types';
+import { getTracks, DEFAULT_TRACKS } from './spec';
 
-// Real, currently-available Gemini models.
 const FLASH_MODEL = 'gemini-2.5-flash';
 const PRO_MODEL = 'gemini-2.5-pro';
 
@@ -18,12 +19,10 @@ export const MODEL_LABELS = {
 
 let runtimeApiKey = '';
 
-/** Set the runtime key (from the settings UI). */
 export function setApiKey(key: string): void {
   runtimeApiKey = (key ?? '').trim();
 }
 
-/** Effective key = runtime UI key, else a build-time env key. */
 export function getEffectiveApiKey(): string {
   if (runtimeApiKey && !runtimeApiKey.includes('MY_GEMINI_API_KEY')) return runtimeApiKey;
   const envKey = (process.env.GEMINI_API_KEY ?? '').trim();
@@ -48,28 +47,37 @@ const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // --- Public API ---------------------------------------------------------
 
 /**
- * Step 1: Parse and summarize the raw rules document text into a structured spec.
+ * Step 1: Parse and summarize the raw rules document into the two-track spec.
  */
 export async function parseRulesSpec(rulesText: string, usePro: boolean): Promise<string> {
   if (isSimulationMode()) return simulateRulesSpec(rulesText);
 
   const prompt = `
-Summarize this annotation rules document into a structured JSON specification.
-The JSON MUST have the following fields:
-1. "segmentationRules": a string describing how the video should be segmented (e.g. "Every scene change", "Fixed 5-second intervals", "Continuous conversation blocks") and the required timestamp format (e.g., "MM:SS.S" or "seconds").
-2. "columns": an array of objects. Each object represents an annotation lane/caption field requested. It must have:
-   - "id": a short camelCase ID (e.g., "transcription", "audioCharacteristics", "visualDescription")
-   - "name": the title of the column (e.g., "Transcription", "Speech Characteristics", "Visual", "Audio")
-   - "description": what belongs in this lane according to the rules.
-   - "required": boolean
-3. "requiredVocabulary": an array of exact required strings or keywords (e.g., ["unintelligible", "camera", "accent", "cough"]).
-4. "hardConstraints": an array of strings outlining word limits, character counts, or forbidden content.
-5. "commonMistakes": an array of strings warning about common errors from the rules.
+Summarize this annotation rules document into a structured JSON specification for a
+two-track video annotation tool. There are exactly two annotation tracks, each with
+exactly two caption fields, and each track is segmented on its OWN independent timeline:
+
+- "speech" track: caption 1 = Speech Transcription, caption 2 = Speech Characteristics.
+- "av" track: caption 1 = Audio, caption 2 = Visual.
+
+The JSON MUST have these fields:
+1. "segmentationRules": a string describing how each track should be segmented (speech by
+   utterance, audio/visual by scene/sound change) and the timestamp format (decimal seconds).
+2. "tracks": an object with keys "speech" and "av". Each is an object with:
+   - "name": display name of the track.
+   - "captions": an array of EXACTLY two caption objects, each with:
+       - "id": short camelCase id (keep: speechTranscription, speechCharacteristics, audio, visual)
+       - "name": the caption title (editable to match the rules' wording)
+       - "description": what belongs in this caption according to the rules.
+3. "requiredVocabulary": array of exact required strings/keywords.
+4. "hardConstraints": array of strings for word/character limits or forbidden content.
+5. "commonMistakes": array of strings warning about common errors.
 
 Rules document text:
 ${rulesText}
 
-Return ONLY a valid JSON object matching the schema above. Do not include markdown code blocks or any explanation outside the JSON.`.trim();
+Return ONLY a valid JSON object matching the schema above. Keep the caption ids exactly as
+listed. Do not include markdown code blocks or any explanation outside the JSON.`.trim();
 
   try {
     return await callGemini(modelFor(usePro), prompt, 0.2, true);
@@ -80,9 +88,8 @@ Return ONLY a valid JSON object matching the schema above. Do not include markdo
 }
 
 /**
- * Step 2: Generate dynamic annotations for a video based on a rules spec.
- * Uploads the video via the Gemini Files API, waits for it to become ACTIVE,
- * then requests structured segment annotations. Falls back to inline base64.
+ * Step 2: Generate annotations for both tracks, each independently segmented.
+ * Returns a JSON string: { "speech": [...], "av": [...] }.
  */
 export async function generateAnnotations(
   videoBlob: Blob,
@@ -94,7 +101,7 @@ export async function generateAnnotations(
   if (isSimulationMode()) {
     onProgress('Analyzing video timeline...');
     await delay(1500);
-    onProgress('Processing segment draft...');
+    onProgress('Segmenting speech and audio/visual tracks...');
     await delay(1500);
     return simulateAnnotations(rulesSpecJson);
   }
@@ -125,39 +132,9 @@ export async function generateAnnotations(
   }
 
   onProgress('Scanning video content...');
+  const systemPrompt = buildGenerationPrompt(rulesSpecJson);
 
-  const spec = safeParse(rulesSpecJson);
-  const columns: any[] = Array.isArray(spec.columns) ? spec.columns : [];
-  const columnKeys = columns.map((c) => c.id);
-  const colDescriptions = columns
-    .map((c) => `- ${c.name} (${c.id}): ${c.description ?? ''}`)
-    .join('\n');
-  const columnsListStr = columnKeys.map((k) => `"${k}": "string content"`).join(', ');
-
-  const systemPrompt = `
-You are a professional video annotator. Your job is to output a structured caption/annotation file for the uploaded video following the provided rules specification strictly.
-
-Annotation lanes to fill for each segment:
-${colDescriptions}
-
-Rules Guidelines:
-${rulesSpecJson}
-
-Generate continuous contiguous segments covering the video timeline from beginning to end.
-Return a JSON array of segment objects. Each segment object MUST have:
-- "startTime": double representing the start of the segment in seconds (e.g. 0.0)
-- "endTime": double representing the end of the segment in seconds (e.g. 4.5)
-${columnsListStr}
-
-Precision instructions:
-- Only describe what is directly evidenced in the video. If speech is unclear, use the rules' unintelligible marker rather than guessing.
-- Use the exact timestamp format and exact null-marker strings from the rules verbatim.
-- Never let content leak between lanes (e.g. do not put audio description in the visual description lane).
-- Timestamps must fall within the video range.
-
-Return ONLY a valid JSON array of objects. Do not wrap in markdown or any other text.`.trim();
-
-  onProgress('Analyzing video segment details...');
+  onProgress('Segmenting speech and audio/visual tracks...');
   try {
     const response = await client().models.generateContent({
       model,
@@ -166,7 +143,7 @@ Return ONLY a valid JSON array of objects. Do not wrap in markdown or any other 
           role: 'user',
           parts: [
             { fileData: { fileUri, mimeType: fileMime } },
-            { text: 'Please annotate this entire video according to the instructions.' },
+            { text: 'Please annotate this entire video for both tracks according to the instructions.' },
           ],
         },
       ],
@@ -197,16 +174,7 @@ async function generateAnnotationsInline(
 
   onProgress('Transmitting video chunk to Gemini...');
   const base64Video = await blobToBase64(videoBlob);
-
-  const systemPrompt = `
-Analyze this video and produce structured annotation segments.
-Guidelines:
-${rulesSpecJson}
-
-Return a valid JSON array of segment objects. Each segment object MUST have:
-- "startTime": double (seconds)
-- "endTime": double (seconds)
-And the specific caption fields outlined in the guidelines.`.trim();
+  const systemPrompt = buildGenerationPrompt(rulesSpecJson);
 
   const response = await client().models.generateContent({
     model,
@@ -215,7 +183,7 @@ And the specific caption fields outlined in the guidelines.`.trim();
         role: 'user',
         parts: [
           { inlineData: { mimeType, data: base64Video } },
-          { text: 'Annotate this video.' },
+          { text: 'Annotate this video for both tracks.' },
         ],
       },
     ],
@@ -225,11 +193,48 @@ And the specific caption fields outlined in the guidelines.`.trim();
       temperature: 0.2,
     },
   });
-  return response.text ?? '[]';
+  return response.text ?? '{"speech":[],"av":[]}';
+}
+
+function buildGenerationPrompt(rulesSpecJson: string): string {
+  const tracks = getTracks(rulesSpecJson);
+  const describe = (t: TrackDef) =>
+    `  "${t.id}" track (${t.name}) — segment on its own timeline. Each object has:\n` +
+    `    - "startTime": number (seconds), "endTime": number (seconds)\n` +
+    `    - "${t.captions[0].id}": ${t.captions[0].name} — ${t.captions[0].description}\n` +
+    `    - "${t.captions[1].id}": ${t.captions[1].name} — ${t.captions[1].description}`;
+
+  return `
+You are a professional video annotator. Produce a structured, two-track annotation of the
+uploaded video following the rules specification strictly.
+
+There are TWO tracks, each segmented on its OWN independent timeline (a speech utterance and
+a scene/sound change do NOT need to line up):
+
+${describe(tracks.speech)}
+
+${describe(tracks.av)}
+
+Rules specification:
+${rulesSpecJson}
+
+Precision instructions:
+- Cover the whole video timeline continuously within each track, independently.
+- Only describe what is directly evidenced in the video. If speech is unclear, use the rules'
+  unintelligible/null marker rather than guessing.
+- Never let content leak between captions (e.g. do not put visual info in the audio caption).
+- Timestamps in seconds, within the video range.
+
+Return ONLY a valid JSON object of the exact shape:
+{
+  "speech": [ { "startTime": 0.0, "endTime": 3.5, "${tracks.speech.captions[0].id}": "...", "${tracks.speech.captions[1].id}": "..." } ],
+  "av": [ { "startTime": 0.0, "endTime": 6.0, "${tracks.av.captions[0].id}": "...", "${tracks.av.captions[1].id}": "..." } ]
+}
+Do not wrap in markdown or add any text outside the JSON.`.trim();
 }
 
 /**
- * Segment-level cell regeneration.
+ * Segment-level cell regeneration (one caption of one annotation).
  */
 export async function regenerateSegmentCell(
   startSec: number,
@@ -244,13 +249,13 @@ export async function regenerateSegmentCell(
   if (isSimulationMode()) {
     await delay(1000);
     return userInstruction.trim()
-      ? `[${columnName} Segment Update: Applied custom instruction '${userInstruction}'. Segment: ${startSec} - ${endSec}]`
+      ? `[${columnName} update: applied '${userInstruction}' for ${startSec}s-${endSec}s]`
       : `Revised ${columnName} text based on constraints.`;
   }
 
   const prompt = `
-Regenerate the annotation cell for the video segment [${startSec}s - ${endSec}s].
-Column Lane: "${columnName}" (id: ${columnId})
+Regenerate the annotation caption for the video segment [${startSec}s - ${endSec}s].
+Caption: "${columnName}" (id: ${columnId})
 Current Value: "${existingValue}"
 Rules Spec:
 ${rulesSpecJson}
@@ -258,8 +263,8 @@ ${rulesSpecJson}
 Correction / Focus Instruction:
 ${userInstruction}
 
-Please rewrite the content for this specific lane to strictly respect the rules document and correction instruction.
-Return ONLY the new string content. Do not include quotes, explanation, or JSON structures. Just the raw string value of the caption cell.`.trim();
+Rewrite the content for this caption to strictly respect the rules and the correction.
+Return ONLY the new string content — no quotes, no explanation, no JSON.`.trim();
 
   try {
     return await callGemini(modelFor(usePro), prompt, 0.3, false);
@@ -270,8 +275,8 @@ Return ONLY the new string content. Do not include quotes, explanation, or JSON 
 }
 
 /**
- * Linting: validate a segment against the rules spec and flag violations.
- * Returns a JSON object mapping columnIds to a warning string.
+ * Linting: validate one annotation's two captions against the rules spec.
+ * Returns a JSON object mapping captionId -> warning string.
  */
 export async function lintSegment(
   startSec: number,
@@ -281,12 +286,13 @@ export async function lintSegment(
   usePro: boolean
 ): Promise<string> {
   if (isSimulationMode()) {
-    await delay(400);
-    return simulateLint(captionsJson, rulesSpecJson);
+    await delay(300);
+    return simulateLint(captionsJson);
   }
 
   const prompt = `
-Validate the following annotation captions for video segment [${startSec}s - ${endSec}s] against the rules specification.
+Validate the following annotation captions for the video segment [${startSec}s - ${endSec}s]
+against the rules specification.
 
 Rules Specification:
 ${rulesSpecJson}
@@ -294,19 +300,10 @@ ${rulesSpecJson}
 Segment Captions:
 ${captionsJson}
 
-Your job is to identify any rule violations for each caption lane. Examples of violations:
-- Missing required keywords (e.g. "accent" if speech is foreign, or exact null markers).
-- Exceeding character/word constraints.
-- Vague phrases, content leaked between wrong sensory lanes.
-- Non-compliant timestamp formatting.
-
-Return ONLY a valid JSON object mapping caption ids to a concise string warning message. If there is NO violation for a field, omit its key or assign an empty string "".
-Example output format:
-{
-   "transcription": "Exceeds word limit constraint of 15 words",
-   "speechCharacteristics": "Missing required accent classification"
-}
-Do not include markdown tags, code blocks, or any introductory text. Return only the raw JSON.`.trim();
+Identify any rule violations per caption (missing required keywords/markers, exceeding
+character/word limits, vague phrasing, content leaked into the wrong caption, bad timestamp
+format). Return ONLY a valid JSON object mapping caption ids to a concise warning string. If a
+caption has no violation, omit its key or set it to "". No markdown, no extra text.`.trim();
 
   try {
     return await callGemini(modelFor(usePro), prompt, 0.1, true);
@@ -339,7 +336,7 @@ async function waitForFileActive(
   name: string,
   onProgress: (msg: string) => void
 ): Promise<{ uri?: string; mimeType?: string; state?: string }> {
-  const maxAttempts = 60; // 60 * 5s = 5 min max
+  const maxAttempts = 60;
   for (let attempts = 0; attempts < maxAttempts; attempts++) {
     const file = await client().files.get({ name });
     const state = String(file.state ?? 'PROCESSING');
@@ -347,9 +344,7 @@ async function waitForFileActive(
       onProgress('Video processing finished! Ready for analysis.');
       return file;
     }
-    if (state === 'FAILED') {
-      throw new Error('File processing failed in Gemini.');
-    }
+    if (state === 'FAILED') throw new Error('File processing failed in Gemini.');
     onProgress(`Processing video in the cloud (attempt ${attempts + 1} of ${maxAttempts})...`);
     await delay(5000);
   }
@@ -359,10 +354,7 @@ async function waitForFileActive(
 function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      resolve(result.split(',')[1] ?? '');
-    };
+    reader.onload = () => resolve((reader.result as string).split(',')[1] ?? '');
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(blob);
   });
@@ -379,123 +371,87 @@ function safeParse(json: string): any {
 // --- High-fidelity simulation generators (offline / demo mode) ----------
 
 function simulateRulesSpec(rawText: string): string {
-  const textLower = rawText.toLowerCase();
-  const columns: RulesSpec['columns'] = [
-    {
-      id: 'transcription',
-      name: 'Transcription',
-      description:
-        'Verbatim text including stutters/fillers as required. Enclose uncertain words in brackets.',
-      required: true,
-    },
-  ];
-
-  if (textLower.includes('visual') || textLower.includes('video') || textLower.includes('camera')) {
-    columns.push({
-      id: 'visualDescription',
-      name: 'Visual/Camera',
-      description:
-        "Describe on-screen characters, camera moves, and context. Mark text in single quotes.",
-      required: true,
-    });
-  } else {
-    columns.push({
-      id: 'speechCharacteristics',
-      name: 'Speech Characteristics',
-      description: 'Tone, accents, gender, pace, and stutters.',
-      required: false,
-    });
-  }
-
-  columns.push({
-    id: 'audioEffects',
-    name: 'Audio/SFX',
-    description:
-      'Non-speech audio sounds (cough, laugh, background noise). Use [brackets] for effects.',
-    required: true,
-  });
-
+  const t = rawText.toLowerCase();
   const spec: RulesSpec = {
     segmentationRules:
-      'Every conversational utterance or distinct screen change, formatted as standard decimal seconds (e.g., 0.0 to 3.5).',
-    columns,
-    requiredVocabulary: ['[unintelligible]', '[background noise]', '[music]', 'laughs', 'stutters'],
+      'Speech is segmented per utterance; Audio/Visual is segmented per scene or distinct sound change. Timestamps in decimal seconds. Each track has its own independent timeline.',
+    tracks: {
+      speech: {
+        ...DEFAULT_TRACKS.speech,
+        captions: [
+          { ...DEFAULT_TRACKS.speech.captions[0] },
+          {
+            ...DEFAULT_TRACKS.speech.captions[1],
+            description: t.includes('accent')
+              ? 'Tone, accent classification, gender, pace, emotion, and stutters.'
+              : DEFAULT_TRACKS.speech.captions[1].description,
+          },
+        ],
+      },
+      av: { ...DEFAULT_TRACKS.av, captions: [...DEFAULT_TRACKS.av.captions] },
+    },
+    requiredVocabulary: ['[unintelligible]', '[background noise]', '[music]', 'laughs'],
     hardConstraints: [
-      'Keep segment length within 1.0 to 10.0 seconds.',
-      'Always include verbatim speech transcriptions.',
-      "Use exact null marker '[unintelligible]' when audio is unclear.",
+      'Keep each segment within 1.0 to 10.0 seconds.',
+      "Use exact null marker '[unintelligible]' when speech is unclear.",
+      'Never mix visual actions into the Audio caption.',
     ],
     commonMistakes: [
-      'Mixing visual actions into the audio effects column.',
-      'Omitting speaker labels in conversation blocks.',
+      'Aligning speech and A/V boundaries when they should be independent.',
+      'Omitting on-screen text in the Visual caption.',
     ],
   };
   return JSON.stringify(spec);
 }
 
 function simulateAnnotations(rulesSpecJson: string): string {
-  const spec = safeParse(rulesSpecJson);
-  const columns: any[] = Array.isArray(spec.columns) ? spec.columns : [];
+  const tracks = getTracks(rulesSpecJson);
+  const [sT, sC] = tracks.speech.captions;
+  const [aud, vis] = tracks.av.captions;
 
-  const sampleTranscriptions = [
-    "Alright, let's look at this screen, which is... uh... showing the dashboard.",
-    "I will click on the 'Generate' button right here. It should, you know, take a few seconds.",
-    'Wow! Look at that, it generated a full set of rules from our uploaded PDF file.',
-    'This is incredible. The segments are perfectly aligned with the audio playhead.',
-    'Let\'s export this. We can copy each individual cell or download everything as CSV.',
+  const speechLines = [
+    ["Alright, let's look at this screen, which is... uh... showing the dashboard.", 'Male voice, casual pace, slight hesitation with filler.'],
+    ["I'll click the 'Generate' button. It should, you know, take a few seconds.", 'Male voice, upbeat, mild filler usage.'],
+    ['Wow! It generated a full set of rules from our uploaded PDF.', 'Male voice, excited, rising intonation.'],
+    ['The segments align perfectly with the audio playhead.', 'Male voice, calm, measured.'],
+    ["Let's export this — copy a cell or download the whole CSV.", 'Male voice, concluding tone.'],
   ];
-  const sampleVisuals = [
-    'Wide shot of the user interface dashboard. Cursor moves towards the center.',
-    "Close-up of the 'Generate' button glowing with a subtle breathing light animation.",
-    'Split screen showing the parsed rules document checklist alongside a video preview card.',
-    'Scrolling down the list of annotated timeline rows, each highlighting as playhead passes.',
-    'Cursor hovering over the CSV and JSON export options in the toolbar.',
-  ];
-  const sampleAudios = [
-    '[clicking mouse sound]',
-    '[keyboard typing clicks]',
-    '[sigh of satisfaction]',
-    '[subtle background ambient music playing]',
-    '[system ding alert]',
+  const avLines = [
+    ['[soft ambient background music]', 'Wide shot of the UI dashboard. Cursor moves toward center.'],
+    ['[mouse clicking]', "Close-up of the 'Generate' button with a subtle glow animation."],
+    ['[keyboard typing clicks]', "Split screen: parsed rules checklist beside a video preview card."],
+    ['[system ding alert]', 'Scrolling the annotated timeline; rows highlight as the playhead passes.'],
   ];
 
-  const segmentDuration = 4.0;
-  const segments: any[] = [];
-  for (let i = 0; i < 5; i++) {
-    const start = i * segmentDuration;
-    const seg: any = { startTime: start, endTime: start + segmentDuration };
-    for (const col of columns) {
-      const id: string = col.id;
-      if (id.includes('trans')) seg[id] = sampleTranscriptions[i];
-      else if (id.includes('vis')) seg[id] = sampleVisuals[i];
-      else if (id.includes('aud') || id.includes('sfx')) seg[id] = sampleAudios[i];
-      else seg[id] = 'Complies with rule guidelines. [Null marker applied]';
-    }
-    segments.push(seg);
-  }
-  return JSON.stringify(segments);
+  const speech = speechLines.map((line, i) => ({
+    startTime: i * 3.0,
+    endTime: i * 3.0 + 3.0,
+    [sT.id]: line[0],
+    [sC.id]: line[1],
+  }));
+  const av = avLines.map((line, i) => ({
+    startTime: i * 5.0,
+    endTime: i * 5.0 + 5.0,
+    [aud.id]: line[0],
+    [vis.id]: line[1],
+  }));
+
+  return JSON.stringify({ speech, av });
 }
 
-function simulateLint(captionsJson: string, rulesSpecJson: string): string {
-  const captions = safeParse(captionsJson);
-  const spec = safeParse(rulesSpecJson);
-  const columns: any[] = Array.isArray(spec.columns) ? spec.columns : [];
+function simulateLint(captionsJson: string): string {
+  const caps = safeParse(captionsJson);
   const result: Record<string, string> = {};
-
-  for (const col of columns) {
-    const id: string = col.id;
-    const val: string = String(captions[id] ?? '');
-    if (id.includes('trans') && (val.includes('uh') || val.includes('you know'))) {
-      result[id] =
-        "Rule warning: Contains filler phrase ('uh' / 'you know'). Check if rules permit colloquial speech.";
+  for (const id of Object.keys(caps)) {
+    const val = String(caps[id] ?? '');
+    const key = id.toLowerCase();
+    if (key.includes('transcription') && (val.includes('uh') || val.includes('you know'))) {
+      result[id] = "Contains filler ('uh' / 'you know'). Check if rules permit colloquial speech.";
     } else if (
-      id.includes('vis') &&
-      !val.includes('shot') &&
-      !val.includes('screen') &&
-      !val.includes('Cursor')
+      key.includes('visual') &&
+      !/shot|screen|cursor|close-up|wide/i.test(val)
     ) {
-      result[id] =
-        "Vague visual description: Include camera shot angle (e.g., 'Close-up' or 'Wide shot').";
+      result[id] = "Vague visual: include a camera shot angle (e.g. 'Close-up', 'Wide shot').";
     }
   }
   return JSON.stringify(result);

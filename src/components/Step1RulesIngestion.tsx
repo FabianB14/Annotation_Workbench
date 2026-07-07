@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Store } from '../store';
 import { MODEL_LABELS } from '../services/gemini';
 import { extractTextFromFile } from '../services/documentExtractor';
+import { getTrackList } from '../services/spec';
 import { safeParseObject } from '../utils';
 import { Switch, Spinner } from './Shared';
 import {
@@ -81,7 +82,7 @@ export default function Step1RulesIngestion({ store }: { store: Store }) {
   // ---- render: spec review ----
   if (parsedSpecJson.trim()) {
     const spec = safeParseObject(parsedSpecJson);
-    const columns: any[] = Array.isArray(spec.columns) ? spec.columns : [];
+    const trackList = getTrackList(parsedSpecJson);
     const constraints: string[] = Array.isArray(spec.hardConstraints) ? spec.hardConstraints : [];
 
     return (
@@ -110,16 +111,23 @@ export default function Step1RulesIngestion({ store }: { store: Store }) {
                 {spec.segmentationRules || 'Continuous segment flow.'}
               </div>
               <hr className="divider" />
-              <div className="spec-row primary-text">Sensory Caption Lanes</div>
-              {columns.map((col, i) => (
-                <div key={i} className="spec-col">
-                  <span className="primary-text">→</span>
-                  <div>
-                    <div className="name">
-                      {col.name} <span className="muted">[id: {col.id}]</span>
-                    </div>
-                    <div className="desc">{col.description}</div>
+              <div className="spec-row primary-text">Annotation Tracks (2 captions each)</div>
+              {trackList.map((track) => (
+                <div key={track.id} style={{ paddingLeft: 4 }}>
+                  <div className="name" style={{ marginBottom: 2 }}>
+                    {track.name} <span className="muted">[{track.id}]</span>
                   </div>
+                  {track.captions.map((cap, i) => (
+                    <div key={cap.id} className="spec-col">
+                      <span className="primary-text">{i + 1}.</span>
+                      <div>
+                        <div className="name">
+                          {cap.name} <span className="muted">[id: {cap.id}]</span>
+                        </div>
+                        <div className="desc">{cap.description}</div>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               ))}
               <hr className="divider" />
