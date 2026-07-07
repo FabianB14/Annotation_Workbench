@@ -2,11 +2,13 @@
 // Replaces the Room database from the original Android app.
 
 import type { Project, AnnotationSegment } from '../types';
+import type { TimeFormat } from '../utils';
 
 const PROJECTS_KEY = 'aw.projects';
 const SEGMENTS_KEY = 'aw.segments';
 const API_KEY = 'aw.apiKey';
 const MODEL_PREF_KEY = 'aw.fastDraft';
+const TIME_FORMAT_KEY = 'aw.timeFormat';
 
 function read<T>(key: string, fallback: T): T {
   try {
@@ -74,6 +76,14 @@ export function loadFastDraftPref(): boolean {
 
 export function saveFastDraftPref(fast: boolean): void {
   localStorage.setItem(MODEL_PREF_KEY, String(fast));
+}
+
+export function loadTimeFormat(): TimeFormat {
+  return localStorage.getItem(TIME_FORMAT_KEY) === 'seconds' ? 'seconds' : 'mmss';
+}
+
+export function saveTimeFormat(format: TimeFormat): void {
+  localStorage.setItem(TIME_FORMAT_KEY, format);
 }
 
 // --- IDs ---

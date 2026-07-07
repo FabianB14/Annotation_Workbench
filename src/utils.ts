@@ -1,11 +1,20 @@
 // Small shared helpers.
 
+/** How timestamps are displayed across the workspace. */
+export type TimeFormat = 'mmss' | 'seconds';
+
 /** Format milliseconds as MM:SS.S (matches the original Android formatter). */
 export function formatTimeMs(ms: number): string {
   const totalSeconds = ms / 1000;
   const minutes = Math.floor(ms / 60000);
   const seconds = totalSeconds % 60;
   return `${String(minutes).padStart(2, '0')}:${seconds.toFixed(1).padStart(4, '0')}`;
+}
+
+/** Format milliseconds in the chosen display format: MM:SS.S or plain seconds. */
+export function formatTime(ms: number, format: TimeFormat): string {
+  if (format === 'seconds') return `${(ms / 1000).toFixed(1)}s`;
+  return formatTimeMs(ms);
 }
 
 /** Strip ```json fences that models sometimes wrap responses in. */

@@ -8,6 +8,7 @@ import * as storage from './services/storage';
 import * as videoStore from './services/videoStore';
 import * as gemini from './services/gemini';
 import { cleanJsonString, safeParseObject } from './utils';
+import type { TimeFormat } from './utils';
 
 export interface Store {
   projects: Project[];
@@ -21,9 +22,11 @@ export interface Store {
   fastDraft: boolean;
   apiKey: string;
   simulationMode: boolean;
+  timeFormat: TimeFormat;
 
   setStep: (step: number) => void;
   setFastDraft: (fast: boolean) => void;
+  setTimeFormat: (format: TimeFormat) => void;
   setApiKey: (key: string) => void;
   clearError: () => void;
   selectProject: (project: Project) => void;
@@ -67,6 +70,7 @@ export function useStore(): Store {
   const [fastDraft, setFastDraftState] = useState<boolean>(() => storage.loadFastDraftPref());
   const [apiKey, setApiKeyState] = useState<string>(() => storage.loadApiKey());
   const [simulationMode, setSimulationMode] = useState<boolean>(true);
+  const [timeFormat, setTimeFormatState] = useState<TimeFormat>(() => storage.loadTimeFormat());
 
   // Keep the gemini service key in sync and recompute simulation flag.
   useEffect(() => {
@@ -126,6 +130,11 @@ export function useStore(): Store {
   const setFastDraft = useCallback((fast: boolean) => {
     setFastDraftState(fast);
     storage.saveFastDraftPref(fast);
+  }, []);
+
+  const setTimeFormat = useCallback((format: TimeFormat) => {
+    setTimeFormatState(format);
+    storage.saveTimeFormat(format);
   }, []);
 
   const setApiKey = useCallback((key: string) => {
@@ -480,8 +489,10 @@ export function useStore(): Store {
     fastDraft,
     apiKey,
     simulationMode,
+    timeFormat,
     setStep,
     setFastDraft,
+    setTimeFormat,
     setApiKey,
     clearError,
     selectProject,
