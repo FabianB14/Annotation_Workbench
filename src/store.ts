@@ -9,7 +9,7 @@ import * as videoStore from './services/videoStore';
 import * as gemini from './services/gemini';
 import { getTracks, TRACK_IDS } from './services/spec';
 import { correctMs, validateCorrection, qaLine } from './services/normalization';
-import { cleanJsonString, safeParseObject } from './utils';
+import { cleanJsonString, safeParseObject, parseJsonLoose } from './utils';
 import type { TimeFormat } from './utils';
 
 /** Normalization inputs captured on the upload screen. */
@@ -293,7 +293,18 @@ export function useStore(): Store {
       }
 
       const cleaned = cleanJsonString(resultText);
-      const parsed = JSON.parse(cleaned);
+      let parsed: any;
+      let wasRepaired = false;
+      try {
+        const result = parseJsonLoose(cleaned);
+        parsed = result.value;
+        wasRepaired = result.repaired;
+      } catch (parseErr) {
+        throw new Error(
+          `The model returned malformed JSON that could not be recovered. Try "Regenerate All", ` +
+            `or switch to a shorter clip. (${(parseErr as Error).message})`
+        );
+      }
       const tracks = getTracks(proj.confirmedSpecJson);
       const newSegments: AnnotationSegment[] = [];
 
@@ -330,6 +341,12 @@ export function useStore(): Store {
 
       persistSegments(proj.id, newSegments);
       setCurrentStep(3);
+      if (wasRepaired) {
+        setErrorMessage(
+          `Note: the model response was truncated, so a partial set of ${newSegments.length} ` +
+            `annotations was recovered. Use "Regenerate All" for full coverage.`
+        );
+      }
     } catch (e) {
       console.error('Annotation generation failed:', e);
       setErrorMessage(`Annotation Generation failed: ${(e as Error).message}.`);

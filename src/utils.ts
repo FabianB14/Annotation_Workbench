@@ -51,6 +51,70 @@ export function safeParseObject(json: string): Record<string, any> {
   }
 }
 
+/**
+ * Attempt to repair truncated/incomplete JSON by cutting back to the last
+ * completed array/object element and closing any still-open brackets. Returns
+ * null if it can't find a safe truncation point. Used to salvage partial
+ * annotation responses when the model output is cut off mid-JSON.
+ */
+export function repairJson(input: string): string | null {
+  const stack: string[] = [];
+  let inString = false;
+  let escaped = false;
+  let cut = -1;
+  let closers = '';
+
+  for (let i = 0; i < input.length; i++) {
+    const c = input[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (c === '\\') escaped = true;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') {
+      inString = true;
+    } else if (c === '{') {
+      stack.push('}');
+    } else if (c === '[') {
+      stack.push(']');
+    } else if (c === '}' || c === ']') {
+      stack.pop();
+      cut = i; // an element just completed
+      closers = [...stack].reverse().join('');
+    } else if (c === ',' && stack[stack.length - 1] === ']') {
+      // Only cut at array-element commas; a comma inside an object would leave a
+      // partial (missing-field) object, so we ignore those.
+      cut = i - 1;
+      closers = [...stack].reverse().join('');
+    }
+  }
+
+  if (cut < 0) return null;
+  const head = input.slice(0, cut + 1).replace(/[,\s]*$/, '');
+  return head + closers;
+}
+
+/**
+ * Parse JSON, salvaging as much as possible from truncated/invalid output.
+ * Returns { value, repaired }. Throws only if nothing can be recovered.
+ */
+export function parseJsonLoose(text: string): { value: any; repaired: boolean } {
+  try {
+    return { value: JSON.parse(text), repaired: false };
+  } catch (firstErr) {
+    const repaired = repairJson(text);
+    if (repaired) {
+      try {
+        return { value: JSON.parse(repaired), repaired: true };
+      } catch {
+        /* fall through */
+      }
+    }
+    throw firstErr;
+  }
+}
+
 export async function copyToClipboard(text: string): Promise<void> {
   try {
     await navigator.clipboard.writeText(text);
