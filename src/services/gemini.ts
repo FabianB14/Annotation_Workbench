@@ -5,9 +5,42 @@
 // The app has two independently-segmented tracks (speech, av), each with two
 // captions. Generation returns { speech: [...], av: [...] }.
 
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 import type { RulesSpec, TrackDef } from '../types';
-import { getTracks, DEFAULT_TRACKS } from './spec';
+import { getTracks, DEFAULT_TRACKS, BASELINE_HARD_RULES } from './spec';
+
+const baselineRulesBlock = BASELINE_HARD_RULES.map((r, i) => `  ${i + 1}. ${r}`).join('\n');
+
+// Large output budget so long videos aren't truncated mid-JSON.
+const MAX_OUTPUT_TOKENS = 65536;
+
+/**
+ * Build a strict response schema for the two-track output. Forcing structured
+ * output stops the model from emitting invalid JSON (e.g. unescaped quotes in a
+ * caption), which otherwise breaks the whole generation.
+ */
+function buildResponseSchema(tracks: Record<'speech' | 'av', TrackDef>) {
+  const segmentSchema = (t: TrackDef) => ({
+    type: Type.OBJECT,
+    properties: {
+      startTime: { type: Type.NUMBER },
+      endTime: { type: Type.NUMBER },
+      [t.captions[0].id]: { type: Type.STRING },
+      [t.captions[1].id]: { type: Type.STRING },
+    },
+    required: ['startTime', 'endTime', t.captions[0].id, t.captions[1].id],
+    propertyOrdering: ['startTime', 'endTime', t.captions[0].id, t.captions[1].id],
+  });
+  return {
+    type: Type.OBJECT,
+    properties: {
+      speech: { type: Type.ARRAY, items: segmentSchema(tracks.speech) },
+      av: { type: Type.ARRAY, items: segmentSchema(tracks.av) },
+    },
+    required: ['speech', 'av'],
+    propertyOrdering: ['speech', 'av'],
+  };
+}
 
 const FLASH_MODEL = 'gemini-2.5-flash';
 const PRO_MODEL = 'gemini-2.5-pro';
@@ -150,7 +183,9 @@ export async function generateAnnotations(
       config: {
         systemInstruction: systemPrompt,
         responseMimeType: 'application/json',
+        responseSchema: buildResponseSchema(getTracks(rulesSpecJson)),
         temperature: 0.2,
+        maxOutputTokens: MAX_OUTPUT_TOKENS,
       },
     });
     return response.text ?? simulateAnnotations(rulesSpecJson);
@@ -190,7 +225,9 @@ async function generateAnnotationsInline(
     config: {
       systemInstruction: systemPrompt,
       responseMimeType: 'application/json',
+      responseSchema: buildResponseSchema(getTracks(rulesSpecJson)),
       temperature: 0.2,
+      maxOutputTokens: MAX_OUTPUT_TOKENS,
     },
   });
   return response.text ?? '{"speech":[],"av":[]}';
@@ -217,6 +254,9 @@ ${describe(tracks.av)}
 
 Rules specification:
 ${rulesSpecJson}
+
+Baseline hard rules (ALWAYS apply, in addition to the rules spec above):
+${baselineRulesBlock}
 
 Precision instructions:
 - Cover the whole video timeline continuously within each track, independently.
@@ -297,13 +337,18 @@ against the rules specification.
 Rules Specification:
 ${rulesSpecJson}
 
+Baseline hard rules (ALWAYS enforce, in addition to the rules spec):
+${baselineRulesBlock}
+
 Segment Captions:
 ${captionsJson}
 
 Identify any rule violations per caption (missing required keywords/markers, exceeding
 character/word limits, vague phrasing, content leaked into the wrong caption, bad timestamp
-format). Return ONLY a valid JSON object mapping caption ids to a concise warning string. If a
-caption has no violation, omit its key or set it to "". No markdown, no extra text.`.trim();
+format, or any breach of the baseline hard rules — e.g. song lyrics placed in Speech when no
+one on screen is singing them). Return ONLY a valid JSON object mapping caption ids to a concise
+warning string. If a caption has no violation, omit its key or set it to "". No markdown, no
+extra text.`.trim();
 
   try {
     return await callGemini(modelFor(usePro), prompt, 0.1, true);

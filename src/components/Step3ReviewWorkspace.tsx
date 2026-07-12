@@ -43,6 +43,7 @@ export default function Step3ReviewWorkspace({ store }: { store: Store }) {
     null
   );
   const [regenInstruction, setRegenInstruction] = useState('');
+  const [exportErrors, setExportErrors] = useState<string[] | null>(null);
 
   const rowRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
@@ -94,10 +95,55 @@ export default function Step3ReviewWorkspace({ store }: { store: Store }) {
 
   const countFor = (id: TrackId) => segments.filter((s) => s.track === id).length;
 
+  const qaLineStr = currentProject.normalizationQa || '';
+
+  /**
+   * Export integrity guard: every row must have start < end and (when the
+   * source duration is known) fall within the source timeline. Returns the list
+   * of offending rows; empty = OK.
+   */
+  const exportGuard = (): string[] => {
+    const problems: string[] = [];
+    const maxMs = currentProject.sourceDurationSec != null
+      ? currentProject.sourceDurationSec * 1000 + 1000
+      : null;
+    for (const track of trackList) {
+      const rows = segments
+        .filter((s) => s.track === track.id)
+        .sort((a, b) => a.startTimeMs - b.startTimeMs);
+      rows.forEach((seg, i) => {
+        if (seg.startTimeMs >= seg.endTimeMs) {
+          problems.push(
+            `${track.name} #${i + 1}: start ≥ end (${formatTimeMs(seg.startTimeMs)} – ${formatTimeMs(seg.endTimeMs)})`
+          );
+        }
+        if (maxMs != null && seg.endTimeMs > maxMs) {
+          problems.push(
+            `${track.name} #${i + 1}: ends ${formatTimeMs(seg.endTimeMs)} beyond source (${currentProject.sourceDurationSec!.toFixed(1)}s)`
+          );
+        }
+      });
+    }
+    return problems;
+  };
+
+  /** Run the guard; if it fails, surface a modal and abort the export. */
+  const guarded = (fn: () => void) => {
+    const problems = exportGuard();
+    if (problems.length) {
+      setExportErrors(problems);
+      setExportMenu(false);
+      return;
+    }
+    fn();
+  };
+
   // ---- exports (both tracks) ----
   const exportCopyText = () => {
     let out = '=== ANNOTATION WORKBENCH EXPORT ===\n';
-    out += `Project: ${currentProject.name}\n\n`;
+    out += `Project: ${currentProject.name}\n`;
+    if (qaLineStr) out += `${qaLineStr}\n`;
+    out += '\n';
     for (const track of trackList) {
       out += `## ${track.name} track\n`;
       const rows = segments.filter((s) => s.track === track.id).sort((a, b) => a.startTimeMs - b.startTimeMs);
@@ -115,6 +161,12 @@ export default function Step3ReviewWorkspace({ store }: { store: Store }) {
   const exportJson = () => {
     const root: any = {
       project: currentProject.name,
+      normalization: {
+        qa: qaLineStr,
+        appliedSpeed: currentProject.appliedSpeed ?? 1,
+        sourceDurationSec: currentProject.sourceDurationSec,
+        recordingDurationSec: currentProject.recordingDurationSec,
+      },
       tracks: {},
       annotations: {},
     };
@@ -139,7 +191,8 @@ export default function Step3ReviewWorkspace({ store }: { store: Store }) {
 
   const exportCsv = () => {
     const headers = ['Track', 'Start Time', 'End Time', 'Caption 1', 'Caption 2'];
-    let csv = headers.map((h) => `"${h}"`).join(',') + '\n';
+    let csv = qaLineStr ? `# ${qaLineStr}\n` : '';
+    csv += headers.map((h) => `"${h}"`).join(',') + '\n';
     for (const track of trackList) {
       const rows = segments.filter((s) => s.track === track.id).sort((a, b) => a.startTimeMs - b.startTimeMs);
       for (const seg of rows) {
@@ -165,6 +218,7 @@ export default function Step3ReviewWorkspace({ store }: { store: Store }) {
           projectId={currentProject.id}
           isPlaying={isPlaying}
           playbackSpeed={playbackSpeed}
+          speedFactor={currentProject.appliedSpeed ?? 1}
           seekToMs={seekToMs}
           onTimeUpdate={setCurrentTimeMs}
           onDuration={setDurationMs}
@@ -172,6 +226,13 @@ export default function Step3ReviewWorkspace({ store }: { store: Store }) {
           onEnded={() => setIsPlaying(false)}
         />
       </div>
+
+      {(currentProject.appliedSpeed ?? 1) !== 1 && (
+        <div className="norm-badge" title={qaLineStr}>
+          ⏱ Timeline normalized to 1× (S={(currentProject.appliedSpeed ?? 1).toFixed(2)}) — times are on
+          the source timeline
+        </div>
+      )}
 
       <div className="video-hud">
         <span className="time mono">
@@ -269,13 +330,13 @@ export default function Step3ReviewWorkspace({ store }: { store: Store }) {
             </button>
             {exportMenu && (
               <div className="menu" style={{ minWidth: 200 }}>
-                <button onClick={exportCopyText}>
+                <button onClick={() => guarded(exportCopyText)}>
                   <CopyIcon size={16} /> Copy Format text
                 </button>
-                <button onClick={exportJson}>
+                <button onClick={() => guarded(exportJson)}>
                   <CodeIcon size={16} /> Download JSON
                 </button>
-                <button onClick={exportCsv}>
+                <button onClick={() => guarded(exportCsv)}>
                   <GridIcon size={16} /> Download CSV
                 </button>
               </div>
@@ -366,6 +427,33 @@ export default function Step3ReviewWorkspace({ store }: { store: Store }) {
                 }}
               >
                 <RegenIcon size={16} /> Regenerate
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Export integrity failure */}
+      {exportErrors && (
+        <div className="modal-backdrop" onClick={() => setExportErrors(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h2 className="h1" style={{ fontSize: 16, color: 'var(--red)' }}>
+              Export blocked — timeline integrity
+            </h2>
+            <p className="muted">
+              These rows fall outside a valid timeline, so the export was stopped. Fix them (times or
+              the capture speed) and try again:
+            </p>
+            <div style={{ maxHeight: 200, overflowY: 'auto', fontSize: 12 }} className="mono">
+              {exportErrors.map((e, i) => (
+                <div key={i} style={{ color: 'var(--red)', padding: '2px 0' }}>
+                  • {e}
+                </div>
+              ))}
+            </div>
+            <div className="row">
+              <button className="btn btn-primary" onClick={() => setExportErrors(null)}>
+                OK
               </button>
             </div>
           </div>

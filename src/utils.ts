@@ -26,12 +26,92 @@ export function cleanJsonString(raw: string): string {
   return str.trim();
 }
 
+/**
+ * Parse a duration entered as "MM:SS.S" (or "H:MM:SS.S") or plain seconds
+ * ("307.75") into seconds. Returns null if unparseable/empty.
+ */
+export function parseTimeInput(input: string): number | null {
+  const t = input.trim();
+  if (!t) return null;
+  if (t.includes(':')) {
+    const parts = t.split(':').map((p) => Number(p));
+    if (parts.some((n) => isNaN(n) || n < 0)) return null;
+    return parts.reduce((acc, n) => acc * 60 + n, 0);
+  }
+  const n = Number(t);
+  return isNaN(n) || n < 0 ? null : n;
+}
+
 export function safeParseObject(json: string): Record<string, any> {
   try {
     const v = JSON.parse(json);
     return v && typeof v === 'object' ? v : {};
   } catch {
     return {};
+  }
+}
+
+/**
+ * Attempt to repair truncated/incomplete JSON by cutting back to the last
+ * completed array/object element and closing any still-open brackets. Returns
+ * null if it can't find a safe truncation point. Used to salvage partial
+ * annotation responses when the model output is cut off mid-JSON.
+ */
+export function repairJson(input: string): string | null {
+  const stack: string[] = [];
+  let inString = false;
+  let escaped = false;
+  let cut = -1;
+  let closers = '';
+
+  for (let i = 0; i < input.length; i++) {
+    const c = input[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (c === '\\') escaped = true;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') {
+      inString = true;
+    } else if (c === '{') {
+      stack.push('}');
+    } else if (c === '[') {
+      stack.push(']');
+    } else if (c === '}' || c === ']') {
+      stack.pop();
+      cut = i; // an element just completed
+      closers = [...stack].reverse().join('');
+    } else if (c === ',' && stack[stack.length - 1] === ']') {
+      // Only cut at array-element commas; a comma inside an object would leave a
+      // partial (missing-field) object, so we ignore those.
+      cut = i - 1;
+      closers = [...stack].reverse().join('');
+    }
+  }
+
+  if (cut < 0) return null;
+  const head = input.slice(0, cut + 1).replace(/[,\s]*$/, '');
+  return head + closers;
+}
+
+/**
+ * Parse JSON, salvaging as much as possible from truncated/invalid output.
+ * Returns { value, repaired }. Throws only if nothing can be recovered.
+ */
+export function parseJsonLoose(text: string): { value: any; repaired: boolean } {
+  try {
+    return { value: JSON.parse(text), repaired: false };
+  } catch (firstErr) {
+    const repaired = repairJson(text);
+    if (repaired) {
+      try {
+        return { value: JSON.parse(repaired), repaired: true };
+      } catch {
+        /* fall through */
+      }
+    }
+    throw firstErr;
   }
 }
 

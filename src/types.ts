@@ -38,6 +38,19 @@ export interface Project {
   /** Video is persisted as a Blob in IndexedDB, keyed by the project id. */
   hasVideo: boolean;
   videoDurationMs: number;
+
+  // --- Playback-speed normalization ---
+  /** User-selected capture speed (dropdown/custom). 1 = normal. */
+  captureSpeed: number;
+  /** Optional true source duration in seconds (entered by the user). */
+  sourceDurationSec: number | null;
+  /** Recording duration measured from the uploaded file, in seconds. */
+  recordingDurationSec: number | null;
+  /** Resolved correction factor S actually applied (source/recording). 1 = none. */
+  appliedSpeed: number;
+  /** QA line describing the normalization, embedded in exports. */
+  normalizationQa: string;
+
   createdAt: number;
   updatedAt: number;
 }

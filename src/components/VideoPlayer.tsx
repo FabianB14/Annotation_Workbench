@@ -7,7 +7,14 @@ interface Props {
   projectId: string;
   isPlaying: boolean;
   playbackSpeed: number;
-  /** When set, seek to this ms then the parent should clear it via onSeekProcessed. */
+  /**
+   * Speed-correction factor S (source/recording). The media plays the (possibly
+   * sped-up) recording, but all times exposed to the app are on the source
+   * timeline: source_ms = media_ms * S. Setting playbackRate to 1/S makes the
+   * recording play back at true 1x.
+   */
+  speedFactor: number;
+  /** When set, seek to this SOURCE-timeline ms then clear it via onSeekProcessed. */
   seekToMs: number | null;
   onTimeUpdate: (ms: number) => void;
   onDuration: (ms: number) => void;
@@ -19,12 +26,14 @@ export default function VideoPlayer({
   projectId,
   isPlaying,
   playbackSpeed,
+  speedFactor,
   seekToMs,
   onTimeUpdate,
   onDuration,
   onSeekProcessed,
   onEnded,
 }: Props) {
+  const s = speedFactor && speedFactor > 0 ? speedFactor : 1;
   const videoRef = useRef<HTMLVideoElement>(null);
   const [url, setUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -68,15 +77,16 @@ export default function VideoPlayer({
     else v.pause();
   }, [isPlaying, url]);
 
-  // Speed
+  // Speed: play the recording at 1/S so it runs at true 1x, scaled by the
+  // user's chosen playback speed.
   useEffect(() => {
-    if (videoRef.current) videoRef.current.playbackRate = playbackSpeed;
-  }, [playbackSpeed, url]);
+    if (videoRef.current) videoRef.current.playbackRate = playbackSpeed / s;
+  }, [playbackSpeed, s, url]);
 
-  // Seek
+  // Seek (seekToMs is a source-timeline value -> convert to media time).
   useEffect(() => {
     if (seekToMs == null || !videoRef.current) return;
-    videoRef.current.currentTime = seekToMs / 1000;
+    videoRef.current.currentTime = seekToMs / 1000 / s;
     onSeekProcessed();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seekToMs]);
@@ -107,8 +117,8 @@ export default function VideoPlayer({
         ref={videoRef}
         src={url}
         playsInline
-        onLoadedMetadata={(e) => onDuration(Math.round(e.currentTarget.duration * 1000))}
-        onTimeUpdate={(e) => onTimeUpdate(Math.round(e.currentTarget.currentTime * 1000))}
+        onLoadedMetadata={(e) => onDuration(Math.round(e.currentTarget.duration * 1000 * s))}
+        onTimeUpdate={(e) => onTimeUpdate(Math.round(e.currentTarget.currentTime * 1000 * s))}
         onEnded={onEnded}
       />
     </div>

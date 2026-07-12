@@ -6,6 +6,16 @@ import { safeParseObject } from '../utils';
 
 export const TRACK_IDS: TrackId[] = ['speech', 'av'];
 
+/**
+ * Baseline hard rules applied to EVERY annotation, regardless of the uploaded
+ * rules document. Injected into both generation and linting prompts.
+ */
+export const BASELINE_HARD_RULES: string[] = [
+  "If music or a song is playing, do NOT put the song's lyrics in the Speech Transcription unless a person present in the video is actually singing them. Background/soundtrack lyrics are not speech — note the music in the Audio caption instead (e.g. \"[song playing]\").",
+  'Only transcribe as speech what a person in the video actually says or sings on camera/on mic. Never attribute background-track vocals to a speaker.',
+  'Keep each caption in its own lane — do not let audio/music content leak into Speech, or visual content into Audio.',
+];
+
 export const DEFAULT_TRACKS: Record<TrackId, TrackDef> = {
   speech: {
     id: 'speech',
