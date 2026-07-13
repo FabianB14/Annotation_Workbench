@@ -264,6 +264,11 @@ Precision instructions:
   unintelligible/null marker rather than guessing.
 - Never let content leak between captions (e.g. do not put visual info in the audio caption).
 - Timestamps in seconds, within the video range.
+- Visual two-pass verification: for EACH Visual caption, first note what you think is shown, then
+  review the frames of that segment a SECOND time and compare against your first read. Confirm the
+  people, objects, actions, and any on-screen text actually match before finalizing. Keep only what
+  holds up on both passes; if the passes disagree or you're unsure, describe it more generally
+  instead of guessing.
 
 Return ONLY a valid JSON object of the exact shape:
 {

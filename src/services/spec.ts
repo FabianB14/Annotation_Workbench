@@ -14,6 +14,7 @@ export const BASELINE_HARD_RULES: string[] = [
   "If music or a song is playing, do NOT put the song's lyrics in the Speech Transcription unless a person present in the video is actually singing them. Background/soundtrack lyrics are not speech — note the music in the Audio caption instead (e.g. \"[song playing]\").",
   'Only transcribe as speech what a person in the video actually says or sings on camera/on mic. Never attribute background-track vocals to a speaker.',
   'Keep each caption in its own lane — do not let audio/music content leak into Speech, or visual content into Audio.',
+  'Double-check every Visual caption with a second pass: after describing what is on screen, re-examine the video again and confirm the people, objects, actions, and on-screen text actually match. Only keep details you can verify on both passes; if the two passes disagree or you are unsure, describe it more generally rather than guessing.',
 ];
 
 export const DEFAULT_TRACKS: Record<TrackId, TrackDef> = {
